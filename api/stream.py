@@ -82,11 +82,108 @@ def rewrite_mpd(content, base_url):
     return content
 
 
+def mpd_to_hls(mpd_text, base_url, channel):
+    """Konvert MPD ke HLS playlist dengan fMP4 segments"""
+    import xml.etree.ElementTree as ET
+    ns = {"mpd": "urn:mpeg:dash:schema:mpd:2011"}
+    root = ET.fromstring(mpd_text)
+
+    period = root.find("mpd:Period", ns)
+    if not period:
+        raise Exception("No Period found")
+
+    # Ambil video AdaptationSet
+    video_set = None
+    audio_set = None
+    for ads in period.findall("mpd:AdaptationSet", ns):
+        mime = ads.get("mimeType", "")
+        if "video" in mime:
+            video_set = ads
+        elif "audio" in mime:
+            audio_set = ads
+
+    if not video_set:
+        raise Exception("No video AdaptationSet")
+
+    seg_template = video_set.find("mpd:SegmentTemplate", ns)
+    if not seg_template:
+        raise Exception("No SegmentTemplate")
+
+    timescale = int(seg_template.get("timescale", 1))
+    init_template = seg_template.get("initialization", "")
+    media_template = seg_template.get("media", "")
+    pto = int(seg_template.get("presentationTimeOffset", 0))
+
+    # Ambil representation terbaik (bandwidth tertinggi tapi bukan yg terbesar)
+    reps = video_set.findall("mpd:Representation", ns)
+    reps_sorted = sorted(reps, key=lambda r: int(r.get("bandwidth", 0)))
+    # Pilih resolusi 720p atau tertinggi yang ada
+    rep = reps_sorted[-1]
+    for r in reps_sorted:
+        if int(r.get("height", 0)) >= 720:
+            rep = r
+            break
+
+    rep_id = rep.get("id")
+    codecs = rep.get("codecs", "avc1.64001f")
+    width = rep.get("width", "1280")
+    height = rep.get("height", "720")
+    bandwidth = rep.get("bandwidth", "1500000")
+
+    def make_url(template, rep_id, time=None):
+        url = template.replace("$RepresentationID$", rep_id)
+        if time is not None:
+            url = url.replace("$Time$", str(time))
+        if url.startswith("http"):
+            return url
+        return base_url + url
+
+    def proxy(url):
+        return f"{BASE_URL}/chunk?url={requests.utils.quote(url, safe='')}"
+
+    # Init segment
+    init_url = proxy(make_url(init_template, rep_id))
+
+    # Segment timeline
+    timeline = seg_template.find("mpd:SegmentTimeline", ns)
+    segments = []
+    if timeline:
+        t = None
+        for s in timeline.findall("mpd:S", ns):
+            if t is None:
+                t = int(s.get("t", 0))
+            d = int(s.get("d", 0))
+            r = int(s.get("r", 0))
+            for _ in range(r + 1):
+                segments.append((t, d))
+                t += d
+
+    # Build HLS
+    lines = ["#EXTM3U", "#EXT-X-VERSION:6", "#EXT-X-TARGETDURATION:4",
+             "#EXT-X-PLAYLIST-TYPE:EVENT",
+             f'#EXT-X-MAP:URI="{init_url}"']
+
+    for t, d in segments:
+        dur = d / timescale
+        seg_url = proxy(make_url(media_template, rep_id, t))
+        lines.append(f"#EXTINF:{dur:.3f},")
+        lines.append(seg_url)
+
+    return "\n".join(lines)
+
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
         params = parse_qs(parsed.query)
+
+        # /stream-hls/{channel}.m3u8
+        m = re.match(r"^/stream-hls/([^/]+)\.m3u8$", path)
+        if m:
+            channel = m.group(1)
+            self._handle_hls(channel)
+            return
 
         # /stream-dash/{channel}.mpd
         m = re.match(r"^/stream-dash/([^/]+)\.mpd$", path)
@@ -101,6 +198,25 @@ class handler(BaseHTTPRequestHandler):
             return
 
         self._error(404, "Not found")
+
+    def _handle_hls(self, channel):
+        mpd_url = CHANNELS.get(channel)
+        if not mpd_url:
+            self._error(404, "Channel tidak tersedia")
+            return
+        try:
+            resp = requests.get(mpd_url, headers=HEADERS, timeout=10)
+            resp.raise_for_status()
+            base_url = mpd_url.rsplit("/", 1)[0] + "/"
+            content = mpd_to_hls(resp.text, base_url, channel)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(content.encode())
+        except Exception as e:
+            self._error(502, str(e))
 
     def _handle_mpd(self, channel):
         mpd_url = CHANNELS.get(channel)
