@@ -126,19 +126,11 @@ class handler(BaseHTTPRequestHandler):
         if not url:
             self._error(400, "Missing url")
             return
-        try:
-            resp = requests.get(url, headers=HEADERS, stream=True, timeout=15)
-            resp.raise_for_status()
-            content_type = resp.headers.get("Content-Type", "application/octet-stream")
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            for chunk in resp.iter_content(chunk_size=8192):
-                self.wfile.write(chunk)
-        except Exception as e:
-            self._error(502, str(e))
+        # Redirect 302 ke CDN langsung — cepat, URL CDN tidak terekspos di MPD
+        self.send_response(302)
+        self.send_header("Location", url)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
 
     def _error(self, code, message):
         import json
