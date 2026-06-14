@@ -66,53 +66,7 @@ def rewrite_mpd(content, base_url):
     return content
 
 
-def mpd_to_hls(mpd_text, base_url):
-    import xml.etree.ElementTree as ET
-    ns = {"mpd": "urn:mpeg:dash:schema:mpd:2011"}
-    root = ET.fromstring(mpd_text)
-    period = root.find("mpd:Period", ns)
-    if not period:
-        raise Exception("No Period")
-
-    video_set = None
-    for ads in period.findall("mpd:AdaptationSet", ns):
-        if "video" in ads.get("mimeType", ""):
-            video_set = ads
-            break
-    if not video_set:
-        raise Exception("No video AdaptationSet")
-
-    seg_template = video_set.find("mpd:SegmentTemplate", ns)
-    if not seg_template:
-        raise Exception("No SegmentTemplate")
-
-    timescale = int(seg_template.get("timescale", 1))
-    init_template = seg_template.get("initialization", "")
-    media_template = seg_template.get("media", "")
-
-    # Pilih representasi AVC bandwidth tertinggi
-    reps = video_set.findall("mpd:Representation", ns)
-    reps_avc = [r for r in reps if "avc" in r.get("codecs", "")]
-    if not reps_avc:
-        reps_avc = reps
-    rep = max(reps_avc, key=lambda r: int(r.get("bandwidth", 0)))
-    rep_id = rep.get("id")
-    codecs = rep.get("codecs", "avc1.64001f")
-    width = rep.get("width", "1280")
-    height = rep.get("height", "720")
-    bandwidth = rep.get("bandwidth", "1500000")
-
-    def make_abs(template, rep_id, time=None):
-        url = template.replace("$RepresentationID$", rep_id)
-        if time is not None:
-            url = url.replace("$Time$", str(time))
-        if url.startswith("http"):
-            return url
-        return urljoin(base_url, url)
-
-    init_url = make_abs(init_template, rep_id)
-
-    # Parse SegmentTimeline
+def parse_segments(seg_template, ns, timescale):
     timeline = seg_template.find("mpd:SegmentTimeline", ns)
     segments = []
     if timeline:
@@ -125,21 +79,103 @@ def mpd_to_hls(mpd_text, base_url):
             for _ in range(r + 1):
                 segments.append((t, d))
                 t += d
+    return segments
 
-    # Target duration
-    target_dur = max((d / timescale for _, d in segments), default=3)
+
+def make_abs(template, rep_id, base_url, time=None):
+    url = template.replace("$RepresentationID$", rep_id)
+    if time is not None:
+        url = url.replace("$Time$", str(time))
+    if url.startswith("http"):
+        return url
+    return urljoin(base_url, url)
+
+
+def mpd_to_hls(mpd_text, base_url):
+    import xml.etree.ElementTree as ET
+    ns = {"mpd": "urn:mpeg:dash:schema:mpd:2011"}
+    root = ET.fromstring(mpd_text)
+    period = root.find("mpd:Period", ns)
+    if not period:
+        raise Exception("No Period")
+
+    video_set = None
+    audio_set = None
+    for ads in period.findall("mpd:AdaptationSet", ns):
+        mime = ads.get("mimeType", "")
+        if "video" in mime and not video_set:
+            video_set = ads
+        elif "audio" in mime and not audio_set:
+            audio_set = ads
+
+    if not video_set:
+        raise Exception("No video AdaptationSet")
+
+    # Video
+    v_tmpl = video_set.find("mpd:SegmentTemplate", ns)
+    v_timescale = int(v_tmpl.get("timescale", 1))
+    v_init = v_tmpl.get("initialization", "")
+    v_media = v_tmpl.get("media", "")
+    v_reps = video_set.findall("mpd:Representation", ns)
+    v_reps_avc = [r for r in v_reps if "avc" in r.get("codecs", "")]
+    if not v_reps_avc:
+        v_reps_avc = v_reps
+    v_rep = max(v_reps_avc, key=lambda r: int(r.get("bandwidth", 0)))
+    v_rep_id = v_rep.get("id")
+    v_codecs = v_rep.get("codecs", "avc1.64001f")
+
+    v_segments = parse_segments(v_tmpl, ns, v_timescale)
+    v_init_url = make_abs(v_init, v_rep_id, base_url)
+    target_dur = max((d / v_timescale for _, d in v_segments), default=3)
 
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:7",
         f"#EXT-X-TARGETDURATION:{int(target_dur) + 1}",
         "#EXT-X-MEDIA-SEQUENCE:0",
-        f'#EXT-X-MAP:URI="{init_url}"',
     ]
 
-    for t, d in segments:
-        dur = d / timescale
-        seg_url = make_abs(media_template, rep_id, t)
+    # Audio track
+    if audio_set:
+        a_tmpl = audio_set.find("mpd:SegmentTemplate", ns)
+        a_timescale = int(a_tmpl.get("timescale", 1))
+        a_init = a_tmpl.get("initialization", "")
+        a_media = a_tmpl.get("media", "")
+        a_reps = audio_set.findall("mpd:Representation", ns)
+        a_rep = max(a_reps, key=lambda r: int(r.get("bandwidth", 0)))
+        a_rep_id = a_rep.get("id")
+        a_codecs = a_rep.get("codecs", "mp4a.40.2")
+        a_segments = parse_segments(a_tmpl, ns, a_timescale)
+        a_init_url = make_abs(a_init, a_rep_id, base_url)
+
+        lines.append(f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Audio",DEFAULT=YES,URI="data:application/vnd.apple.mpegurl;base64,"')
+        # Buat audio sub-playlist inline
+        a_lines = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:7",
+            f"#EXT-X-TARGETDURATION:{int(target_dur) + 1}",
+            "#EXT-X-MEDIA-SEQUENCE:0",
+            f'#EXT-X-MAP:URI="{a_init_url}"',
+        ]
+        for t, d in a_segments:
+            dur = d / a_timescale
+            seg_url = make_abs(a_media, a_rep_id, base_url, t)
+            a_lines.append(f"#EXTINF:{dur:.3f},")
+            a_lines.append(seg_url)
+        import base64
+        a_playlist = "\n".join(a_lines)
+        a_b64 = base64.b64encode(a_playlist.encode()).decode()
+
+        lines[-1] = f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Audio",DEFAULT=YES,URI="data:application/vnd.apple.mpegurl;base64,{a_b64}"' 
+        lines.append(f'#EXT-X-STREAM-INF:BANDWIDTH={v_rep.get("bandwidth","1500000")},CODECS="{v_codecs},{a_codecs}",AUDIO="audio"')
+    else:
+        lines.append(f'#EXT-X-STREAM-INF:BANDWIDTH={v_rep.get("bandwidth","1500000")},CODECS="{v_codecs}"')
+
+    # Video init + segments
+    lines.append(f'#EXT-X-MAP:URI="{v_init_url}"')
+    for t, d in v_segments:
+        dur = d / v_timescale
+        seg_url = make_abs(v_media, v_rep_id, base_url, t)
         lines.append(f"#EXTINF:{dur:.3f},")
         lines.append(seg_url)
 
