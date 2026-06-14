@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "regions": ["sin1"],
+  "builds": [
+    { "src": "api/stream.py", "use": "@vercel/python" }
+  ],
+  "routes": [
+    { "src": "/(.*)", "dest": "/api/stream.py" }
+  ]
+}
