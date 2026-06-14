@@ -4,7 +4,7 @@ from urllib.parse import urlparse, parse_qs, urljoin
 from http.server import BaseHTTPRequestHandler
 import requests
 
-BASE_URL = "https://cdn-server-maxstream.vidiraplay.biz.id"
+BASE_URL = "https://cdn-server-indihometv.vidiraplay.biz.id"
 
 CHANNELS = {
     "btv": "https://cdnbal1.indihometv.com/atm/DASH/beritasatu/beritasatu-avc1_2500000=7-3277707030000000.mpd",
