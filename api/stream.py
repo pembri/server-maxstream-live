@@ -65,7 +65,13 @@ def rewrite_mpd(content, base_url):
         return urljoin(base_url, rel)
 
     def proxy_url(url):
-        return f"{BASE_URL}/chunk?url={requests.utils.quote(abs_url(url), safe='')}"
+        # Jangan encode $RepresentationID$ dan $Time$ — itu DASH template variable
+        abs = abs_url(url)
+        # Pisahkan bagian template variable dulu
+        import urllib.parse
+        # Encode tapi preserve $ signs
+        encoded = urllib.parse.quote(abs, safe='$/:@!'  )
+        return f"{BASE_URL}/chunk?url={encoded}"
 
     # Rewrite initialization dan media template
     content = re.sub(
