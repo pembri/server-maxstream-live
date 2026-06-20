@@ -4,12 +4,20 @@
     {
       "src": "api/proxy.py",
       "use": "@vercel/python"
+    },
+    {
+      "src": "api/hls.py",
+      "use": "@vercel/python"
     }
   ],
   "routes": [
     {
       "src": "/stream-dash/(.+)/master\\.mpd",
       "dest": "/api/proxy.py"
+    },
+    {
+      "src": "/stream-hls/(.+)/(.+)\\.m3u8",
+      "dest": "/api/hls.py"
     }
   ]
 }
