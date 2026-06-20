@@ -1,10 +1,15 @@
 {
   "version": 2,
-  "regions": ["sin1"],
   "builds": [
-    { "src": "api/stream.py", "use": "@vercel/python" }
+    {
+      "src": "api/proxy.py",
+      "use": "@vercel/python"
+    }
   ],
   "routes": [
-    { "src": "/(.*)", "dest": "/api/stream.py" }
+    {
+      "src": "/stream-dash/(.+)/master\\.mpd",
+      "dest": "/api/proxy.py"
+    }
   ]
 }
