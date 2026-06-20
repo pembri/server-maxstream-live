@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler
 
@@ -11,21 +12,39 @@ with open(os.path.join(BASE_DIR, "channels.json")) as f:
 
 NS = {"mpd": "urn:mpeg:dash:schema:mpd:2011"}
 
+# Module-level cache: persists across "warm" invocations of the same
+# serverless instance (not guaranteed, but free when it happens). Keeps
+# video/audio sub-playlist requests that land close together from each
+# triggering their own separate fetch+parse of the same origin .mpd.
+_MPD_CACHE = {}
+_MPD_CACHE_TTL = 1.5  # seconds; keep well under the MPD's minimumUpdatePeriod
+
 
 # ---------- DASH (MPD) helpers ----------
 
 def fetch_mpd_root(url):
-    r = requests.get(
-        url,
-        timeout=6,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-        },
-    )
-    r.raise_for_status()
-    return ET.fromstring(r.content)
+    now = time.monotonic()
+    cached = _MPD_CACHE.get(url)
+    if cached and (now - cached[0]) < _MPD_CACHE_TTL:
+        return cached[1]
+
+    # Cache-bust via query string (standard, harmless) instead of custom
+    # headers — Cache-Control/Pragma on the inbound request likely confused
+    # the origin/CDN and caused the fetch failures seen after the last change.
+    sep = "&" if "?" in url else "?"
+    bust_url = f"{url}{sep}_={int(now * 1000)}"
+
+    last_err = None
+    for _attempt in range(2):
+        try:
+            r = requests.get(bust_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+            r.raise_for_status()
+            root = ET.fromstring(r.content)
+            _MPD_CACHE[url] = (now, root)
+            return root
+        except Exception as e:
+            last_err = e
+    raise last_err
 
 
 def origin_base_url(origin_url):
@@ -150,15 +169,24 @@ def build_master_playlist(reps):
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        path = self.path.lstrip("/").split("?")[0]
-        parts = path.split("/")
+        try:
+            path = self.path.lstrip("/").split("?")[0]
+            parts = path.split("/")
 
-        if len(parts) == 3 and parts[0] == "stream-dash" and parts[2] == "master.mpd":
-            self._handle_dash(parts[1])
-        elif len(parts) == 3 and parts[0] == "stream-hls" and parts[2].endswith(".m3u8"):
-            self._handle_hls(parts[1], parts[2])
-        else:
-            self._error(400, "Bad request")
+            if len(parts) == 3 and parts[0] == "stream-dash" and parts[2] == "master.mpd":
+                self._handle_dash(parts[1])
+            elif len(parts) == 3 and parts[0] == "stream-hls" and parts[2].endswith(".m3u8"):
+                self._handle_hls(parts[1], parts[2])
+            else:
+                self._error(400, "Bad request")
+        except Exception as e:
+            # Make sure unexpected failures show up in Vercel function logs
+            # with a traceback, instead of silently producing a broken
+            # response that hls.js can't parse.
+            import traceback
+            print(f"[proxy] unhandled exception on {self.path}: {e}")
+            traceback.print_exc()
+            self._error(500, f"Internal error: {e}")
 
     def _handle_dash(self, slug):
         if slug not in CHANNELS:
