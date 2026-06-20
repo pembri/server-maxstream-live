@@ -15,7 +15,15 @@ NS = {"mpd": "urn:mpeg:dash:schema:mpd:2011"}
 # ---------- DASH (MPD) helpers ----------
 
 def fetch_mpd_root(url):
-    r = requests.get(url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+    r = requests.get(
+        url,
+        timeout=6,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        },
+    )
     r.raise_for_status()
     return ET.fromstring(r.content)
 
