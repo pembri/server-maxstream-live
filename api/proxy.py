@@ -263,18 +263,30 @@ class handler(BaseHTTPRequestHandler):
                 self._error(502, "No segments available")
                 return
 
+        body_bytes = body.encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/vnd.apple.mpegurl")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-store, max-age=0, must-revalidate")
+        self.send_header("Content-Length", str(len(body_bytes)))
         self.end_headers()
-        self.wfile.write(body.encode())
+        if self.command != "HEAD":
+            self.wfile.write(body_bytes)
+
+    def do_HEAD(self):
+        # Some clients probe with HEAD before GET. BaseHTTPRequestHandler
+        # returns 501 for it by default, which is harmless on its own but
+        # worth eliminating as a source of noise/confusion while debugging.
+        self.do_GET()
 
     def _error(self, code, msg):
+        body_bytes = msg.encode()
         self.send_response(code)
         self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body_bytes)))
         self.end_headers()
-        self.wfile.write(msg.encode())
+        if self.command != "HEAD":
+            self.wfile.write(body_bytes)
 
     def log_message(self, format, *args):
         pass
