@@ -59,7 +59,7 @@ def fetch_mpd_root(url):
     last_err = None
     for _attempt in range(2):
         try:
-            r = requests.get(bust_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+            r = requests.get(bust_url, timeout=4, headers={"User-Agent": "Mozilla/5.0"})
             r.raise_for_status()
             root = ET.fromstring(r.content)
 
