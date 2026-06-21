@@ -56,27 +56,25 @@ def fetch_mpd_root(url):
     sep = "&" if "?" in url else "?"
     bust_url = f"{url}{sep}_={int(now * 1000)}"
 
-    last_err = None
-    for _attempt in range(2):
-        try:
-            r = requests.get(bust_url, timeout=4, headers={"User-Agent": "Mozilla/5.0"})
-            r.raise_for_status()
-            root = ET.fromstring(r.content)
+    # Hobby plan: Vercel hard-kills the function at 10s total, no override
+    # available. A single attempt with a conservative timeout leaves real
+    # headroom for parsing + writing the response within that budget —
+    # retrying here was eating too much of it.
+    r = requests.get(bust_url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
 
-            ref_time = _manifest_ref_time(root)
-            hw = _HIGHWATER.get(url)
-            if hw and hw[0] > ref_time:
-                # Fresh fetch is *behind* what we already served — origin
-                # node desync. Keep the more-advanced snapshot.
-                root = hw[1]
-            else:
-                _HIGHWATER[url] = (ref_time, root)
+    ref_time = _manifest_ref_time(root)
+    hw = _HIGHWATER.get(url)
+    if hw and hw[0] > ref_time:
+        # Fresh fetch is *behind* what we already served — origin
+        # node desync. Keep the more-advanced snapshot.
+        root = hw[1]
+    else:
+        _HIGHWATER[url] = (ref_time, root)
 
-            _MPD_CACHE[url] = (now, root)
-            return root
-        except Exception as e:
-            last_err = e
-    raise last_err
+    _MPD_CACHE[url] = (now, root)
+    return root
 
 
 def origin_base_url(origin_url):
