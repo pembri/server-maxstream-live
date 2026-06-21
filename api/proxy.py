@@ -19,6 +19,28 @@ NS = {"mpd": "urn:mpeg:dash:schema:mpd:2011"}
 _MPD_CACHE = {}
 _MPD_CACHE_TTL = 1.5  # seconds; keep well under the MPD's minimumUpdatePeriod
 
+# Tracks the most-advanced manifest snapshot seen per channel so far. The
+# origin CDN appears to load-balance across nodes that aren't perfectly
+# synced, so a fresh fetch can sometimes come back *older* (lower segment
+# timestamps) than one we already served. HLS requires MEDIA-SEQUENCE to
+# never decrease, so when that happens we keep serving the more-advanced
+# snapshot instead of handing the player something that goes backwards.
+_HIGHWATER = {}
+
+
+def _manifest_ref_time(root):
+    """Cheap freshness marker: the first <S t="..."> of the first
+    AdaptationSet's SegmentTimeline. Only ever compared against itself for
+    the same channel, so differing timescales between adaptation sets don't
+    matter."""
+    period = root.find("mpd:Period", NS)
+    adapt = period.find("mpd:AdaptationSet", NS)
+    seg_tpl = adapt.find("mpd:SegmentTemplate", NS)
+    timeline = seg_tpl.find("mpd:SegmentTimeline", NS)
+    first_s = timeline.find("mpd:S", NS)
+    t = first_s.get("t")
+    return int(t) if t is not None else 0
+
 
 # ---------- DASH (MPD) helpers ----------
 
@@ -40,6 +62,16 @@ def fetch_mpd_root(url):
             r = requests.get(bust_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
             r.raise_for_status()
             root = ET.fromstring(r.content)
+
+            ref_time = _manifest_ref_time(root)
+            hw = _HIGHWATER.get(url)
+            if hw and hw[0] > ref_time:
+                # Fresh fetch is *behind* what we already served — origin
+                # node desync. Keep the more-advanced snapshot.
+                root = hw[1]
+            else:
+                _HIGHWATER[url] = (ref_time, root)
+
             _MPD_CACHE[url] = (now, root)
             return root
         except Exception as e:
